@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import {CandidateReleasePullRequest, ROOT_PROJECT_PATH} from '../manifest';
-import {logger} from '../util/logger';
 import {
   WorkspacePlugin,
   DependencyGraph,
@@ -26,6 +25,7 @@ import {
   parseCargoManifest,
   CargoDependencies,
   CargoDependency,
+  TargetDependencies,
 } from '../updaters/rust/common';
 import {VersionsMap, Version} from '../version';
 import {CargoToml} from '../updaters/rust/cargo-toml';
@@ -37,6 +37,7 @@ import {PullRequestBody} from '../util/pull-request-body';
 import {BranchName} from '../util/branch-name';
 import {PatchVersionUpdate} from '../versioning-strategy';
 import {CargoLock} from '../updaters/rust/cargo-lock';
+import {ConfigurationError} from '../errors';
 
 interface CrateInfo {
   /**
@@ -92,7 +93,7 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
       cargoManifestContent.parsedContent
     );
     if (!cargoManifest.workspace?.members) {
-      logger.warn(
+      this.logger.warn(
         "cargo-workspace plugin used, but top-level Cargo.toml isn't a cargo workspace"
       );
       return {allPackages: [], candidatesByPackage: {}};
@@ -100,11 +101,19 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
 
     const allCrates: CrateInfo[] = [];
     const candidatesByPackage: Record<string, CandidateReleasePullRequest> = {};
-    const members = cargoManifest.workspace.members;
+
+    const members = (
+      await Promise.all(
+        cargoManifest.workspace.members.map(member =>
+          this.github.findFilesByGlobAndRef(member, this.targetBranch)
+        )
+      )
+    ).flat();
     members.push(ROOT_PROJECT_PATH);
+
     for (const path of members) {
       const manifestPath = addPath(path, 'Cargo.toml');
-      logger.info(`looking for candidate with path: ${path}`);
+      this.logger.info(`looking for candidate with path: ${path}`);
       const candidate = candidates.find(c => c.path === path);
       // get original content of the crate
       const manifestContent =
@@ -118,7 +127,7 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
       const manifest = parseCargoManifest(manifestContent.parsedContent);
       const packageName = manifest.package?.name;
       if (!packageName) {
-        logger.warn(
+        this.logger.warn(
           `package manifest at ${manifestPath} is missing [package.name]`
         );
         continue;
@@ -129,8 +138,16 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
 
       const version = manifest.package?.version;
       if (!version) {
-        throw new Error(
-          `package manifest at ${manifestPath} is missing [package.version]`
+        throw new ConfigurationError(
+          `package manifest at ${manifestPath} is missing [package.version]`,
+          'cargo-workspace',
+          `${this.github.repository.owner}/${this.github.repository.repo}`
+        );
+      } else if (typeof version !== 'string') {
+        throw new ConfigurationError(
+          `package manifest at ${manifestPath} has an invalid [package.version]`,
+          'cargo-workspace',
+          `${this.github.repository.owner}/${this.github.repository.repo}`
         );
       }
       allCrates.push({
@@ -181,7 +198,8 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
         } else if (update.updater instanceof Changelog && dependencyNotes) {
           update.updater.changelogEntry = appendDependenciesSectionToChangelog(
             update.updater.changelogEntry,
-            dependencyNotes
+            dependencyNotes,
+            this.logger
           );
         } else if (
           update.path === addPath(existingCandidate.path, 'Cargo.lock')
@@ -197,13 +215,18 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
         existingCandidate.pullRequest.body.releaseData[0].notes =
           appendDependenciesSectionToChangelog(
             existingCandidate.pullRequest.body.releaseData[0].notes,
-            dependencyNotes
+            dependencyNotes,
+            this.logger
           );
       } else {
         existingCandidate.pullRequest.body.releaseData.push({
           component: pkg.name,
           version: existingCandidate.pullRequest.version,
-          notes: appendDependenciesSectionToChangelog('', dependencyNotes),
+          notes: appendDependenciesSectionToChangelog(
+            '',
+            dependencyNotes,
+            this.logger
+          ),
         });
       }
     }
@@ -235,7 +258,11 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
         {
           component: pkg.name,
           version,
-          notes: appendDependenciesSectionToChangelog('', dependencyNotes),
+          notes: appendDependenciesSectionToChangelog(
+            '',
+            dependencyNotes,
+            this.logger
+          ),
         },
       ]),
       updates: [
@@ -271,11 +298,17 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
     candidates: CandidateReleasePullRequest[],
     updatedVersions: VersionsMap
   ): CandidateReleasePullRequest[] {
-    const rootCandidate = candidates.find(c => c.path === ROOT_PROJECT_PATH);
+    let rootCandidate = candidates.find(c => c.path === ROOT_PROJECT_PATH);
     if (!rootCandidate) {
-      throw Error('Unable to find root candidate pull request');
+      this.logger.warn('Unable to find root candidate pull request');
+      rootCandidate = candidates.find(c => c.config.releaseType === 'rust');
+    }
+    if (!rootCandidate) {
+      this.logger.warn('Unable to find a rust candidate pull request');
+      return candidates;
     }
 
+    // Update the root Cargo.lock if it exists
     rootCandidate.pullRequest.updates.push({
       path: 'Cargo.lock',
       createIfMissing: false,
@@ -298,6 +331,22 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
         ...(crateInfo.manifest['dev-dependencies'] ?? {}),
         ...(crateInfo.manifest['build-dependencies'] ?? {}),
       });
+
+      const targets = crateInfo.manifest.target;
+      if (targets) {
+        for (const targetName in targets) {
+          const target = targets[targetName];
+
+          allDeps.push(
+            ...Object.keys({
+              ...(target.dependencies ?? {}),
+              ...(target['dev-dependencies'] ?? {}),
+              ...(target['build-dependencies'] ?? {}),
+            })
+          );
+        }
+      }
+
       const workspaceDeps = allDeps.filter(dep => workspaceCrateNames.has(dep));
       graph.set(crateInfo.name, {
         deps: workspaceDeps,
@@ -355,27 +404,52 @@ function getChangelogDepsNotes(
     return result;
   };
 
-  const updates: Map<DT, string[]> = new Map();
-  for (const depType of depTypes) {
-    const depUpdates = [];
-    const pkgDepTypes = updatedManifest[depType];
-    if (pkgDepTypes === undefined) {
-      continue;
-    }
-    for (const [depName, currentDepVer] of Object.entries(
-      getDepMap(pkgDepTypes)
-    )) {
-      const origDepVer = depVer(originalManifest[depType]?.[depName]);
-      if (currentDepVer !== origDepVer) {
-        depUpdates.push(
-          `\n    * ${depName} bumped from ${origDepVer} to ${currentDepVer}`
-        );
+  type DepUpdates = Map<DT, Set<string>>;
+
+  const populateUpdates = (
+    originalScope: CargoManifest | TargetDependencies[string],
+    updatedScope: CargoManifest | TargetDependencies[string],
+    updates: DepUpdates
+  ) => {
+    for (const depType of depTypes) {
+      const depUpdates = [];
+      const pkgDepTypes = updatedScope[depType];
+
+      if (pkgDepTypes === undefined) {
+        continue;
+      }
+      for (const [depName, currentDepVer] of Object.entries(
+        getDepMap(pkgDepTypes)
+      )) {
+        const origDepVer = depVer(originalScope[depType]?.[depName]);
+        if (currentDepVer !== origDepVer) {
+          depUpdates.push(
+            `\n    * ${depName} bumped from ${origDepVer} to ${currentDepVer}`
+          );
+        }
+      }
+      if (depUpdates.length > 0) {
+        const updatesForType = updates.get(depType) || new Set();
+        depUpdates.forEach(update => updatesForType.add(update));
+        updates.set(depType, updatesForType);
       }
     }
-    if (depUpdates.length > 0) {
-      updates.set(depType, depUpdates);
+  };
+
+  const updates: DepUpdates = new Map();
+
+  populateUpdates(originalManifest, updatedManifest, updates);
+
+  if (updatedManifest.target && originalManifest.target) {
+    for (const targetName in updatedManifest.target) {
+      populateUpdates(
+        originalManifest.target[targetName],
+        updatedManifest.target[targetName],
+        updates
+      );
     }
   }
+
   for (const [dt, notes] of updates) {
     depUpdateNotes += `\n  * ${dt}`;
     for (const note of notes) {

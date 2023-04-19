@@ -17,10 +17,9 @@ import {Version} from '../version';
 import {BaseStrategy, BaseStrategyOptions, BuildUpdatesOptions} from './base';
 import {Changelog} from '../updaters/changelog';
 import {JavaSnapshot} from '../versioning-strategies/java-snapshot';
-import {Commit} from '../commit';
+import {ConventionalCommit} from '../commit';
 import {Release} from '../release';
 import {ReleasePullRequest} from '../release-pull-request';
-import {logger} from '../util/logger';
 import {PullRequestTitle} from '../util/pull-request-title';
 import {BranchName} from '../util/branch-name';
 import {PullRequestBody} from '../util/pull-request-body';
@@ -30,6 +29,7 @@ import {JavaAddSnapshot} from '../versioning-strategies/java-add-snapshot';
 import {DEFAULT_SNAPSHOT_LABELS} from '../manifest';
 import {JavaReleased} from '../updaters/java/java-released';
 import {mergeUpdates} from '../updaters/composite';
+import {logger as defaultLogger} from '../util/logger';
 
 const CHANGELOG_SECTIONS = [
   {type: 'feat', section: 'Features'},
@@ -58,33 +58,36 @@ export interface JavaBuildUpdatesOption extends BuildUpdatesOptions {
 export class Java extends BaseStrategy {
   protected readonly snapshotVersioning: VersioningStrategy;
   protected readonly snapshotLabels: string[];
+  readonly skipSnapshot: boolean;
 
   constructor(options: BaseStrategyOptions) {
     options.changelogSections = options.changelogSections ?? CHANGELOG_SECTIONS;
     // wrap the configured versioning strategy with snapshotting
     const parentVersioningStrategy =
-      options.versioningStrategy || new DefaultVersioningStrategy();
+      options.versioningStrategy ||
+      new DefaultVersioningStrategy({logger: options.logger ?? defaultLogger});
     options.versioningStrategy = new JavaSnapshot(parentVersioningStrategy);
     super(options);
     this.snapshotVersioning = new JavaAddSnapshot(parentVersioningStrategy);
     this.snapshotLabels = options.snapshotLabels || DEFAULT_SNAPSHOT_LABELS;
+    this.skipSnapshot = options.skipSnapshot ?? false;
   }
 
   async buildReleasePullRequest(
-    commits: Commit[],
+    commits: ConventionalCommit[],
     latestRelease?: Release,
     draft?: boolean,
     labels: string[] = []
   ): Promise<ReleasePullRequest | undefined> {
     if (await this.needsSnapshot(commits, latestRelease)) {
-      logger.info('Repository needs a snapshot bump.');
+      this.logger.info('Repository needs a snapshot bump.');
       return await this.buildSnapshotPullRequest(
         latestRelease,
         draft,
         this.snapshotLabels
       );
     }
-    logger.info('No Java snapshot needed');
+    this.logger.info('No Java snapshot needed');
     return await super.buildReleasePullRequest(
       commits,
       latestRelease,
@@ -119,6 +122,7 @@ export class Java extends BaseStrategy {
       : BranchName.ofTargetBranch(this.targetBranch);
     const notes =
       '### Updating meta-information for bleeding-edge SNAPSHOT release.';
+    // TODO use pullrequest header here?
     const pullRequestBody = new PullRequestBody([
       {
         component,
@@ -131,18 +135,20 @@ export class Java extends BaseStrategy {
       versionsMap,
       changelogEntry: notes,
       isSnapshot: true,
+      commits: [],
     });
     const updatesWithExtras = mergeUpdates(
-      updates.concat(...this.extraFileUpdates(newVersion, versionsMap))
+      updates.concat(...(await this.extraFileUpdates(newVersion, versionsMap)))
     );
     return {
       title: pullRequestTitle,
       body: pullRequestBody,
       updates: updatesWithExtras,
-      labels: labels,
+      labels: [...labels, ...this.extraLabels],
       headRefName: branchName.toString(),
       version: newVersion,
       draft: draft ?? false,
+      group: 'snapshot',
     };
   }
 
@@ -151,11 +157,15 @@ export class Java extends BaseStrategy {
   }
 
   protected async needsSnapshot(
-    commits: Commit[],
+    commits: ConventionalCommit[],
     latestRelease?: Release
   ): Promise<boolean> {
+    if (this.skipSnapshot) {
+      return false;
+    }
+
     const component = await this.getComponent();
-    logger.debug('component:', component);
+    this.logger.debug('component:', component);
 
     const version = latestRelease?.tag?.version;
     if (!version) {
@@ -173,7 +183,8 @@ export class Java extends BaseStrategy {
       .map(commit =>
         PullRequestTitle.parse(
           commit.pullRequest?.title || commit.message,
-          this.pullRequestTitlePattern
+          this.pullRequestTitlePattern,
+          this.logger
         )
       )
       .filter(pullRequest => pullRequest);

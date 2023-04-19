@@ -113,6 +113,7 @@ interface TaggingArgs {
   includeVInTags?: boolean;
   monorepoTags?: boolean;
   pullRequestTitlePattern?: string;
+  pullRequestHeader?: string;
 }
 
 interface CreatePullRequestArgs
@@ -149,6 +150,7 @@ interface BootstrapArgs
     ReleaseArgs {
   initialVersion?: string;
 }
+interface DebugConfigArgs extends GitHubArgs, ManifestArgs {}
 
 function gitHubOptions(yargs: yargs.Argv): yargs.Argv {
   return yargs
@@ -408,6 +410,10 @@ function taggingOptions(yargs: yargs.Argv): yargs.Argv {
     .option('pull-request-title-pattern', {
       describe: 'Title pattern to make release PR',
       type: 'string',
+    })
+    .option('pull-request-header', {
+      describe: 'Header for release PR',
+      type: 'string',
     });
 }
 
@@ -445,6 +451,7 @@ const createReleasePullRequestCommand: yargs.CommandModule<
           changelogType: argv.changelogType,
           changelogHost: argv.changelogHost,
           pullRequestTitlePattern: argv.pullRequestTitlePattern,
+          pullRequestHeader: argv.pullRequestHeader,
           changelogSections: argv.changelogSections,
           releaseAs: argv.releaseAs,
           versioning: argv.versioningStrategy,
@@ -694,7 +701,8 @@ const bootstrapCommand: yargs.CommandModule<{}, BootstrapArgs> = {
       argv.configFile,
       argv.initialVersion
     );
-    const pullRequest = await bootstrapper.bootstrap(argv.path!, {
+    const path = argv.path || ROOT_PROJECT_PATH;
+    const releaserConfig = {
       releaseType: argv.releaseType!,
       component: argv.component,
       packageName: argv.packageName,
@@ -710,8 +718,69 @@ const bootstrapCommand: yargs.CommandModule<{}, BootstrapArgs> = {
       versioning: argv.versioningStrategy,
       extraFiles: argv.extraFiles,
       versionFile: argv.versionFile,
-    });
-    console.log(pullRequest);
+    };
+    if (argv.dryRun) {
+      const pullRequest = await await bootstrapper.buildPullRequest(
+        path,
+        releaserConfig
+      );
+      console.log('Would open 1 pull request');
+      console.log('title:', pullRequest.title);
+      console.log('branch:', pullRequest.headBranchName);
+      console.log('body:', pullRequest.body);
+      console.log('updates:', pullRequest.updates.length);
+      const changes = await github.buildChangeSet(
+        pullRequest.updates,
+        targetBranch
+      );
+      for (const update of pullRequest.updates) {
+        console.log(
+          `  ${update.path}: `,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (update.updater as any).constructor
+        );
+        if (argv.trace) {
+          const change = changes.get(update.path);
+          if (change) {
+            const patch = createPatch(
+              update.path,
+              change.originalContent || '',
+              change.content || ''
+            );
+            console.log(patch);
+          } else {
+            console.warn(`no change found for ${update.path}`);
+          }
+        }
+      }
+    } else {
+      const pullRequest = await bootstrapper.bootstrap(path, releaserConfig);
+      console.log(pullRequest);
+    }
+  },
+};
+
+const debugConfigCommand: yargs.CommandModule<{}, DebugConfigArgs> = {
+  command: 'debug-config',
+  describe: 'debug manifest config',
+  builder(yargs) {
+    return manifestConfigOptions(manifestOptions(gitHubOptions(yargs)));
+  },
+  async handler(argv) {
+    const github = await buildGitHub(argv);
+    const manifestOptions = extractManifestOptions(argv);
+    const targetBranch =
+      argv.targetBranch ||
+      argv.defaultBranch ||
+      github.repository.defaultBranch;
+    const manifest = await Manifest.fromManifest(
+      github,
+      targetBranch,
+      argv.configFile,
+      argv.manifestFile,
+      manifestOptions
+    );
+    console.log(manifest);
   },
 };
 
@@ -721,6 +790,8 @@ async function buildGitHub(argv: GitHubArgs): Promise<GitHub> {
     owner,
     repo,
     token: argv.token!,
+    apiUrl: argv.apiUrl,
+    graphqlUrl: argv.graphqlUrl,
   });
   return github;
 }
@@ -731,6 +802,7 @@ export const parser = yargs
   .command(createManifestPullRequestCommand)
   .command(createManifestReleaseCommand)
   .command(bootstrapCommand)
+  .command(debugConfigCommand)
   .option('debug', {
     describe: 'print verbose errors (use only for local debugging).',
     default: false,
@@ -746,6 +818,28 @@ export const parser = yargs
       setLogger(new CheckpointLogger(true, true));
     } else if (argv.debug) {
       setLogger(new CheckpointLogger(true));
+    }
+  })
+  .option('plugin', {
+    describe: 'load plugin named release-please-<plugin-name>',
+    type: 'array',
+    default: [],
+  })
+  .middleware(argv => {
+    for (const pluginName of argv.plugin) {
+      console.log(`requiring plugin: ${pluginName}`);
+      try {
+        const plugin = require(pluginName.toString());
+        if (plugin?.init) {
+          console.log(`loading plugin: ${pluginName}`);
+        } else {
+          console.warn(
+            `plugin: ${pluginName} did not have an init() function.`
+          );
+        }
+      } catch (e) {
+        console.warn(`failed to require plugin: ${pluginName}:`, e);
+      }
     }
   })
   .demandCommand(1)

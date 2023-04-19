@@ -15,6 +15,7 @@
 import {BaseStrategy, BuildUpdatesOptions, BaseStrategyOptions} from './base';
 import {Update} from '../update';
 import {Changelog} from '../updaters/changelog';
+import {ChangelogJson} from '../updaters/changelog-json';
 import {Version} from '../version';
 import {SetupCfg} from '../updaters/python/setup-cfg';
 import {SetupPy} from '../updaters/python/setup-py';
@@ -23,8 +24,9 @@ import {
   parsePyProject,
   PyProjectToml,
 } from '../updaters/python/pyproject-toml';
-import {logger} from '../util/logger';
 import {PythonFileWithVersion} from '../updaters/python/python-file-with-version';
+import {FileNotFoundError} from '../errors';
+import {filterCommits} from '../util/filter-commits';
 
 const CHANGELOG_SECTIONS = [
   {type: 'feat', section: 'Features'},
@@ -93,7 +95,7 @@ export class Python extends BaseStrategy {
       });
       projectName = pyProject.name;
     } else {
-      logger.warn(
+      this.logger.warn(
         parsedPyProject
           ? 'invalid pyproject.toml'
           : `file ${this.addPath('pyproject.toml')} did not exist`
@@ -101,22 +103,20 @@ export class Python extends BaseStrategy {
     }
 
     if (!projectName) {
-      logger.warn('No project/component found.');
+      this.logger.warn('No project/component found.');
     } else {
-      updates.push({
-        path: this.addPath(`${projectName}/__init__.py`),
-        createIfMissing: false,
-        updater: new PythonFileWithVersion({
-          version,
-        }),
-      });
-      updates.push({
-        path: this.addPath(`src/${projectName}/__init__.py`),
-        createIfMissing: false,
-        updater: new PythonFileWithVersion({
-          version,
-        }),
-      });
+      [projectName, projectName.replace(/-/g, '_')]
+        .flatMap(packageName => [
+          `${packageName}/__init__.py`,
+          `src/${packageName}/__init__.py`,
+        ])
+        .forEach(packagePath =>
+          updates.push({
+            path: this.addPath(packagePath),
+            createIfMissing: false,
+            updater: new PythonFileWithVersion({version}),
+          })
+        );
     }
 
     // There should be only one version.py, but foreach in case that is incorrect
@@ -136,6 +136,22 @@ export class Python extends BaseStrategy {
       });
     });
 
+    // If a machine readable changelog.json exists update it:
+    const artifactName = projectName ?? (await this.getNameFromSetupPy());
+    if (options.commits && artifactName) {
+      const commits = filterCommits(options.commits, this.changelogSections);
+      updates.push({
+        path: 'changelog.json',
+        createIfMissing: false,
+        updater: new ChangelogJson({
+          artifactName,
+          version,
+          commits,
+          language: 'PYTHON',
+        }),
+      });
+    }
+
     return updates;
   }
 
@@ -148,6 +164,35 @@ export class Python extends BaseStrategy {
       return parsePyProject(content.parsedContent);
     } catch (e) {
       return null;
+    }
+  }
+
+  protected async getNameFromSetupPy(): Promise<string | null> {
+    const ARTIFACT_NAME_REGEX = /name *= *['"](?<name>.*)['"](\r|\n|$)/;
+    const setupPyContents = await this.getSetupPyContents();
+    if (setupPyContents) {
+      const match = setupPyContents.match(ARTIFACT_NAME_REGEX);
+      if (match && match?.groups?.name) {
+        return match.groups.name;
+      }
+    }
+    return null;
+  }
+
+  protected async getSetupPyContents(): Promise<string | null> {
+    try {
+      return (
+        await this.github.getFileContentsOnBranch(
+          this.addPath('setup.py'),
+          this.targetBranch
+        )
+      ).parsedContent;
+    } catch (e) {
+      if (e instanceof FileNotFoundError) {
+        return null;
+      } else {
+        throw e;
+      }
     }
   }
 

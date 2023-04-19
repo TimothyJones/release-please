@@ -16,10 +16,9 @@ import {Update} from '../update';
 import {VersionsManifest} from '../updaters/java/versions-manifest';
 import {Version, VersionsMap} from '../version';
 import {Changelog} from '../updaters/changelog';
-import {GitHubFileContents} from '../util/file-cache';
-import {GitHubAPIError, MissingRequiredFileError} from '../errors';
+import {GitHubFileContents} from '@google-automations/git-file-utils';
+import {MissingRequiredFileError, FileNotFoundError} from '../errors';
 import {ConventionalCommit} from '../commit';
-import {logger} from '../util/logger';
 import {Java, JavaBuildUpdatesOption} from './java';
 import {JavaUpdate} from '../updaters/java/java-update';
 
@@ -71,7 +70,7 @@ export class JavaYoshi extends Java {
           this.targetBranch
         );
       } catch (err) {
-        if (err instanceof GitHubAPIError) {
+        if (err instanceof FileNotFoundError) {
           throw new MissingRequiredFileError(
             this.addPath('versions.txt'),
             JavaYoshi.name,
@@ -205,7 +204,7 @@ export class JavaYoshi extends Java {
     for (const versionKey of versionsMap.keys()) {
       const version = versionsMap.get(versionKey);
       if (!version) {
-        logger.warn(`didn't find version for ${versionKey}`);
+        this.logger.warn(`didn't find version for ${versionKey}`);
         continue;
       }
       if (isPromotion && isStableArtifact(versionKey)) {

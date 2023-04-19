@@ -15,7 +15,11 @@
 import {VersioningStrategy} from '../versioning-strategy';
 import {DefaultVersioningStrategy} from '../versioning-strategies/default';
 import {AlwaysBumpPatch} from '../versioning-strategies/always-bump-patch';
+import {AlwaysBumpMinor} from '../versioning-strategies/always-bump-minor';
+import {AlwaysBumpMajor} from '../versioning-strategies/always-bump-major';
 import {ServicePackVersioningStrategy} from '../versioning-strategies/service-pack';
+import {GitHub} from '../github';
+import {ConfigurationError} from '../errors';
 
 export type VersioningStrategyType = string;
 
@@ -23,6 +27,7 @@ export interface VersioningStrategyFactoryOptions {
   type?: VersioningStrategyType;
   bumpMinorPreMajor?: boolean;
   bumpPatchForMinorPreMajor?: boolean;
+  github: GitHub;
 }
 
 export type VersioningStrategyBuilder = (
@@ -32,6 +37,8 @@ export type VersioningStrategyBuilder = (
 const versioningTypes: Record<string, VersioningStrategyBuilder> = {
   default: options => new DefaultVersioningStrategy(options),
   'always-bump-patch': options => new AlwaysBumpPatch(options),
+  'always-bump-minor': options => new AlwaysBumpMinor(options),
+  'always-bump-major': options => new AlwaysBumpMajor(options),
   'service-pack': options => new ServicePackVersioningStrategy(options),
 };
 
@@ -42,7 +49,11 @@ export function buildVersioningStrategy(
   if (builder) {
     return builder(options);
   }
-  throw new Error(`Unknown versioning strategy type: ${options.type}`);
+  throw new ConfigurationError(
+    `Unknown versioning strategy type: ${options.type}`,
+    'core',
+    `${options.github.repository.owner}/${options.github.repository.repo}`
+  );
 }
 
 export function registerVersioningStrategy(

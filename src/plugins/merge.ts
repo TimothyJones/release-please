@@ -25,7 +25,6 @@ import {BranchName} from '../util/branch-name';
 import {Update} from '../update';
 import {mergeUpdates} from '../updaters/composite';
 import {GitHub} from '../github';
-import {logger} from '../util/logger';
 
 /**
  * This plugin merges multiple pull requests into a single
@@ -35,16 +34,19 @@ import {logger} from '../util/logger';
  */
 export class Merge extends ManifestPlugin {
   private pullRequestTitlePattern?: string;
+  private pullRequestHeader?: string;
 
   constructor(
     github: GitHub,
     targetBranch: string,
     repositoryConfig: RepositoryConfig,
-    pullRequestTitlePattern?: string
+    pullRequestTitlePattern?: string,
+    pullRequestHeader?: string
   ) {
     super(github, targetBranch, repositoryConfig);
     this.pullRequestTitlePattern =
       pullRequestTitlePattern || MANIFEST_PULL_REQUEST_TITLE_PATTERN;
+    this.pullRequestHeader = pullRequestHeader;
   }
 
   async run(
@@ -53,7 +55,7 @@ export class Merge extends ManifestPlugin {
     if (candidates.length < 1) {
       return candidates;
     }
-    logger.info(`Merging ${candidates.length} pull requests`);
+    this.logger.info(`Merging ${candidates.length} pull requests`);
 
     const [inScopeCandidates, outOfScopeCandidates] = candidates.reduce<
       Array<Array<CandidateReleasePullRequest>>
@@ -93,7 +95,10 @@ export class Merge extends ManifestPlugin {
         rootRelease?.pullRequest.title.version,
         this.pullRequestTitlePattern
       ),
-      body: new PullRequestBody(releaseData, {useComponents: true}),
+      body: new PullRequestBody(releaseData, {
+        useComponents: true,
+        header: this.pullRequestHeader,
+      }),
       updates,
       labels: Array.from(labels),
       headRefName: BranchName.ofTargetBranch(this.targetBranch).toString(),

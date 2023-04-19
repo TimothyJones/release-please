@@ -14,6 +14,7 @@
 
 import {Commit} from '../commit';
 import {ROOT_PROJECT_PATH} from '../manifest';
+import {normalizePaths} from './commit-utils';
 
 export interface CommitSplitOptions {
   // Include empty git commits: each empty commit is included
@@ -54,36 +55,14 @@ export class CommitSplit {
     opts = opts || {};
     this.includeEmpty = !!opts.includeEmpty;
     if (opts.packagePaths) {
-      const paths: string[] = [];
-      for (let newPath of opts.packagePaths) {
-        // The special "." path, representing the root of the module, should be
-        // ignored by commit-split as it is assigned all commits in manifest.ts
-        if (newPath === ROOT_PROJECT_PATH) {
-          continue;
-        }
-        // normalize so that all paths have leading and trailing slashes for
-        // non-overlap validation.
-        // NOTE: GitHub API always returns paths using the `/` separator,
-        // regardless of what platform the client code is running on
-        newPath = newPath.replace(/\/$/, '');
-        newPath = newPath.replace(/^\//, '');
-        newPath = newPath.replace(/$/, '/');
-        newPath = newPath.replace(/^/, '/');
-        for (let exPath of paths) {
-          exPath = exPath.replace(/$/, '/');
-          exPath = exPath.replace(/^/, '/');
-          if (newPath.indexOf(exPath) >= 0 || exPath.indexOf(newPath) >= 0) {
-            throw new Error(
-              `Path prefixes must be unique: ${newPath}, ${exPath}`
-            );
-          }
-        }
-        // store them with leading and trailing slashes removed.
-        newPath = newPath.replace(/\/$/, '');
-        newPath = newPath.replace(/^\//, '');
-        paths.push(newPath);
-      }
-      this.packagePaths = paths;
+      const paths: string[] = normalizePaths(opts.packagePaths);
+      this.packagePaths = paths
+        .filter(path => {
+          // The special "." path, representing the root of the module, should be
+          // ignored by commit-split as it is assigned all commits in manifest.ts
+          return path !== ROOT_PROJECT_PATH;
+        })
+        .sort((a, b) => b.length - a.length); // sort by longest paths first
     }
   }
 

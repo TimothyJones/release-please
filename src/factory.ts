@@ -16,6 +16,7 @@ import {Strategy} from './strategy';
 import {Go} from './strategies/go';
 import {GoYoshi} from './strategies/go-yoshi';
 import {JavaYoshi} from './strategies/java-yoshi';
+import {JavaYoshiMonoRepo} from './strategies/java-yoshi-mono-repo';
 import {KRMBlueprint} from './strategies/krm-blueprint';
 import {OCaml} from './strategies/ocaml';
 import {PHP} from './strategies/php';
@@ -24,12 +25,14 @@ import {Python} from './strategies/python';
 import {Ruby} from './strategies/ruby';
 import {RubyYoshi} from './strategies/ruby-yoshi';
 import {Rust} from './strategies/rust';
+import {Sfdx} from './strategies/sfdx';
 import {Simple} from './strategies/simple';
 import {TerraformModule} from './strategies/terraform-module';
 import {Helm} from './strategies/helm';
 import {Elixir} from './strategies/elixir';
 import {Dart} from './strategies/dart';
 import {Node} from './strategies/node';
+import {Expo} from './strategies/expo';
 import {GitHub} from './github';
 import {ReleaserConfig} from './manifest';
 import {AlwaysBumpPatch} from './versioning-strategies/always-bump-patch';
@@ -41,6 +44,7 @@ import {Java} from './strategies/java';
 import {Maven} from './strategies/maven';
 import {buildVersioningStrategy} from './factories/versioning-strategy-factory';
 import {buildChangelogNotes} from './factories/changelog-notes-factory';
+import {ConfigurationError} from './errors';
 
 export * from './factories/changelog-notes-factory';
 export * from './factories/plugin-factory';
@@ -67,6 +71,7 @@ const releasers: Record<string, ReleaseBuilder> = {
   java: options => new Java(options),
   maven: options => new Maven(options),
   'java-yoshi': options => new JavaYoshi(options),
+  'java-yoshi-mono-repo': options => new JavaYoshiMonoRepo(options),
   'java-backport': options =>
     new JavaYoshi({
       ...options,
@@ -87,6 +92,7 @@ const releasers: Record<string, ReleaseBuilder> = {
     }),
   'krm-blueprint': options => new KRMBlueprint(options),
   node: options => new Node(options),
+  expo: options => new Expo(options),
   ocaml: options => new OCaml(options),
   php: options => new PHP(options),
   'php-yoshi': options => new PHPYoshi(options),
@@ -94,6 +100,8 @@ const releasers: Record<string, ReleaseBuilder> = {
   ruby: options => new Ruby(options),
   'ruby-yoshi': options => new RubyYoshi(options),
   rust: options => new Rust(options),
+  salesforce: options => new Sfdx(options),
+  sfdx: options => new Sfdx(options),
   simple: options => new Simple(options),
   'terraform-module': options => new TerraformModule(options),
   helm: options => new Helm(options),
@@ -107,6 +115,7 @@ export async function buildStrategy(
   const targetBranch =
     options.targetBranch ?? options.github.repository.defaultBranch;
   const versioningStrategy = buildVersioningStrategy({
+    github: options.github,
     type: options.versioning,
     bumpMinorPreMajor: options.bumpMinorPreMajor,
     bumpPatchForMinorPreMajor: options.bumpPatchForMinorPreMajor,
@@ -128,7 +137,11 @@ export async function buildStrategy(
   if (builder) {
     return builder(strategyOptions);
   }
-  throw new Error(`Unknown release type: ${options.releaseType}`);
+  throw new ConfigurationError(
+    `Unknown release type: ${options.releaseType}`,
+    'core',
+    `${options.github.repository.owner}/${options.github.repository.repo}`
+  );
 }
 
 export function registerReleaseType(

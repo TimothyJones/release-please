@@ -14,11 +14,14 @@
 
 import {BaseStrategy, BuildUpdatesOptions} from './base';
 import {Update} from '../update';
+import {ChangelogJson} from '../updaters/changelog-json';
 import {PackageLockJson} from '../updaters/node/package-lock-json';
 import {SamplesPackageJson} from '../updaters/node/samples-package-json';
 import {Changelog} from '../updaters/changelog';
 import {PackageJson} from '../updaters/node/package-json';
-import {GitHubFileContents} from '../util/file-cache';
+import {GitHubFileContents} from '@google-automations/git-file-utils';
+import {FileNotFoundError, MissingRequiredFileError} from '../errors';
+import {filterCommits} from '../util/filter-commits';
 
 export class Node extends BaseStrategy {
   private pkgJsonContents?: GitHubFileContents;
@@ -67,6 +70,21 @@ export class Node extends BaseStrategy {
       }),
     });
 
+    // If a machine readable changelog.json exists update it:
+    if (options.commits && packageName) {
+      const commits = filterCommits(options.commits, this.changelogSections);
+      updates.push({
+        path: 'changelog.json',
+        createIfMissing: false,
+        updater: new ChangelogJson({
+          artifactName: packageName,
+          version,
+          commits,
+          language: 'JAVASCRIPT',
+        }),
+      });
+    }
+
     return updates;
   }
 
@@ -83,12 +101,23 @@ export class Node extends BaseStrategy {
     return component.match(/^@[\w-]+\//) ? component.split('/')[1] : component;
   }
 
-  private async getPkgJsonContents(): Promise<GitHubFileContents> {
+  protected async getPkgJsonContents(): Promise<GitHubFileContents> {
     if (!this.pkgJsonContents) {
-      this.pkgJsonContents = await this.github.getFileContentsOnBranch(
-        this.addPath('package.json'),
-        this.targetBranch
-      );
+      try {
+        this.pkgJsonContents = await this.github.getFileContentsOnBranch(
+          this.addPath('package.json'),
+          this.targetBranch
+        );
+      } catch (e) {
+        if (e instanceof FileNotFoundError) {
+          throw new MissingRequiredFileError(
+            this.addPath('package.json'),
+            'node',
+            `${this.repository.owner}/${this.repository.repo}`
+          );
+        }
+        throw e;
+      }
     }
     return this.pkgJsonContents;
   }

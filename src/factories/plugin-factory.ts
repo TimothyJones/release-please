@@ -16,6 +16,8 @@ import {
   LinkedVersionPluginConfig,
   PluginType,
   RepositoryConfig,
+  SentenceCasePluginConfig,
+  GroupPriorityPluginConfig,
 } from '../manifest';
 import {GitHub} from '../github';
 import {ManifestPlugin} from '../plugin';
@@ -24,6 +26,11 @@ import {CargoWorkspace} from '../plugins/cargo-workspace';
 import {NodeWorkspace} from '../plugins/node-workspace';
 import {VersioningStrategyType} from './versioning-strategy-factory';
 import {MavenWorkspace} from '../plugins/maven-workspace';
+import {ConfigurationError} from '../errors';
+import {SentenceCase} from '../plugins/sentence-case';
+import {GroupPriority} from '../plugins/group-priority';
+import {Logger} from '../util/logger';
+import {WorkspacePluginOptions} from '../plugins/workspace';
 
 export interface PluginFactoryOptions {
   type: PluginType;
@@ -37,6 +44,9 @@ export interface PluginFactoryOptions {
 
   // workspace options
   updateAllPackages?: boolean;
+  considerAllArtifacts?: boolean;
+
+  logger?: Logger;
 }
 
 export type PluginBuilder = (options: PluginFactoryOptions) => ManifestPlugin;
@@ -48,28 +58,55 @@ const pluginFactories: Record<string, PluginBuilder> = {
       options.targetBranch,
       options.repositoryConfig,
       (options.type as LinkedVersionPluginConfig).groupName,
-      (options.type as LinkedVersionPluginConfig).components
+      (options.type as LinkedVersionPluginConfig).components,
+      {
+        ...options,
+        ...(options.type as WorkspacePluginOptions),
+      }
     ),
   'cargo-workspace': options =>
     new CargoWorkspace(
       options.github,
       options.targetBranch,
       options.repositoryConfig,
-      options
+      {
+        ...options,
+        ...(options.type as WorkspacePluginOptions),
+      }
     ),
   'node-workspace': options =>
     new NodeWorkspace(
       options.github,
       options.targetBranch,
       options.repositoryConfig,
-      options
+      {
+        ...options,
+        ...(options.type as WorkspacePluginOptions),
+      }
     ),
   'maven-workspace': options =>
     new MavenWorkspace(
       options.github,
       options.targetBranch,
       options.repositoryConfig,
-      options
+      {
+        ...options,
+        ...(options.type as WorkspacePluginOptions),
+      }
+    ),
+  'sentence-case': options =>
+    new SentenceCase(
+      options.github,
+      options.targetBranch,
+      options.repositoryConfig,
+      (options.type as SentenceCasePluginConfig).specialWords
+    ),
+  'group-priority': options =>
+    new GroupPriority(
+      options.github,
+      options.targetBranch,
+      options.repositoryConfig,
+      (options.type as GroupPriorityPluginConfig).groups
     ),
 };
 
@@ -77,15 +114,26 @@ export function buildPlugin(options: PluginFactoryOptions): ManifestPlugin {
   if (typeof options.type === 'object') {
     const builder = pluginFactories[options.type.type];
     if (builder) {
-      return builder(options);
+      return builder({
+        ...options.type,
+        ...options,
+      });
     }
-    throw new Error(`Unknown plugin type: ${options.type.type}`);
+    throw new ConfigurationError(
+      `Unknown plugin type: ${options.type.type}`,
+      'core',
+      `${options.github.repository.owner}/${options.github.repository.repo}`
+    );
   } else {
     const builder = pluginFactories[options.type];
     if (builder) {
       return builder(options);
     }
-    throw new Error(`Unknown plugin type: ${options.type}`);
+    throw new ConfigurationError(
+      `Unknown plugin type: ${options.type}`,
+      'core',
+      `${options.github.repository.owner}/${options.github.repository.repo}`
+    );
   }
 }
 

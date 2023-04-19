@@ -17,11 +17,13 @@ Release Please automates releases for the following flavors of repositories:
 | `krm-blueprint`     | [A kpt package, with 1 or more KRM files and a CHANGELOG.md](https://github.com/GoogleCloudPlatform/blueprints/tree/main/catalog/project) |
 | `maven`             | [Strategy for Maven projects, generates SNAPSHOT version after each release and updates `pom.xml` automatically](java.md) |
 | `node`              | [A Node.js repository, with a package.json and CHANGELOG.md](https://github.com/yargs/yargs) |
+| `expo`              | [An Expo based React Native repository, with a package.json, app.json and CHANGELOG.md](https://github.com/yargs/yargs) |
 | `ocaml`             | [An OCaml repository, containing 1 or more opam or esy files and a CHANGELOG.md](https://github.com/grain-lang/binaryen.ml) |
 | `php`               | A repository with a composer.json and a CHANGELOG.md |
 | `python`            | [A Python repository, with a setup.py, setup.cfg, CHANGELOG.md](https://github.com/googleapis/python-storage) and optionally a pyproject.toml and a &lt;project&gt;/\_\_init\_\_.py |
 | `ruby`              | A repository with a version.rb and a CHANGELOG.md |
 | `rust`              | A Rust repository, with a Cargo.toml (either as a crate or workspace) and a CHANGELOG.md |
+| `sfdx`              | A repository with a [sfdx-project.json](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm) and a CHANGELOG.md |
 | `simple`            | [A repository with a version.txt and a CHANGELOG.md](https://github.com/googleapis/gapic-generator) |
 | `terraform-module`  | [A terraform module, with a version in the README.md, and a CHANGELOG.md](https://github.com/terraform-google-modules/terraform-google-project-factory) |
 
@@ -35,11 +37,13 @@ as a starting point.
 A versioning strategy's job is to determine how to increment a SemVer
 version given a list of parsed commits.
 
-| Versioning Strategy | Description |
-| ------------------- | ----------- |
-| `default` | Breaking changes bump the major version, features bump the minor version, bugfixes bump the patch version |
+| Versioning Strategy | Description                                                                                                 |
+|---------------------|-------------------------------------------------------------------------------------------------------------|
+| `default`           | Breaking changes bump the major version, features bump the minor version, bugfixes bump the patch version   |
 | `always-bump-patch` | Always bump patch version. This is useful for backporting bugfixes to previous major/minor release branches |
-| `service-pack` | Designed for Java backport fixes. Uses Maven's specification for service pack versions (e.g. 1.2.3-sp.1) |
+| `always-bump-minor` | Always bump minor version |                                                                                                                                                                    |
+| `always-bump-major` | Always bump major version |                                                                                  
+| `service-pack`      | Designed for Java backport fixes. Uses Maven's specification for service pack versions (e.g. 1.2.3-sp.1)    |
 
 ### Adding additional versioning strategy types
 
@@ -59,12 +63,16 @@ To configure multiple components on different paths, configure a
 ## Changelog Types
 
 A changelog type's job is to build the CHANGELOG notes given a list
-of parsed commits.
+of parsed commits. This generated content is used in the release pull request body
+and in release notes. By replacing the implementation, you can control how your
+release notes appear.
 
 | Changelog Type | Description |
 | -------------- | ----------- |
 | `default` | Default CHANGELOG notes builder. Groups by commit type and links to pull requests and commits |
-| `github` | Uses the GitHub API to generate notes |
+| `github` | Uses the [GitHub API][release-notes-api] to generate notes |
+
+[release-notes-api]: https://docs.github.com/en/rest/releases/releases?apiVersion=2022-11-28#generate-release-notes-content-for-a-release
 
 ### Adding additional changelog types
 
@@ -101,6 +109,15 @@ request title would be `chore(main): release foo-bar v1.2.3`.
 | `${version}` | The version of the component being released |
 | `${branch?}` | The target branch of the pull request. If you have multiple release branches, this helps identify which release branch we are working on |
 
+### Pull Request Header
+
+If you would like to customize the pull request header, you can use the
+`--pull-request-header` CLI option or the `pull-request-header`
+option in the manifest configuration.
+
+By default, the pull request header is:
+`:robot: I have created a release *beep* *boop*`.
+
 ## Release Lifecycle Labels
 
 By default, we open release pull requests with the `autorelease: pending`
@@ -125,7 +142,15 @@ using the [Generic](/src/updaters/generic.ts) updater. You can specify
 a comma separated list of file paths with the `--extra-files` CLI option
 or the `extra-files` option in the manifest configuration.
 
-To mark versions needing update in those files, you will add annotations
+```json
+{
+  "extra-files": [
+    "path/to/file.md"
+  ]
+}
+```
+
+To mark versions needing an update in those files, you will add annotations
 (usually in comments).
 
 You can annotate a line (inline) via:
@@ -184,6 +209,44 @@ configuration.
       "type": "xml",
       "path": "path/to/file.xml",
       "xpath": "//xpath/to/field"
+    }
+  ]
+}
+```
+
+## Updating arbitrary YAML files
+
+For most release strategies, you can provide additional files to update
+using the [GenericYaml](/src/updaters/generic-yaml.ts) updater. You can
+specify a configuration object in the `extra-files` option in the manifest
+configuration.
+
+```json
+{
+  "extra-files": [
+    {
+      "type": "yaml",
+      "path": "path/to/file.yaml",
+      "jsonpath": "$.json.path.to.field"
+    }
+  ]
+}
+```
+
+## Updating arbitrary TOML files
+
+For most release strategies, you can provide additional files to update
+using the [GenericToml](/src/updaters/generic-toml.ts) updater. You can
+specify a configuration object in the `extra-files` option in the manifest
+configuration.
+
+```json
+{
+  "extra-files": [
+    {
+      "type": "toml",
+      "path": "path/to/file.toml",
+      "jsonpath": "$.json.path.to.field"
     }
   ]
 }

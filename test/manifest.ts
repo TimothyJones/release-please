@@ -15,6 +15,7 @@
 import {describe, it, beforeEach, afterEach} from 'mocha';
 import {Manifest} from '../src/manifest';
 import {GitHub, ReleaseOptions} from '../src/github';
+import * as githubModule from '../src/github';
 import * as sinon from 'sinon';
 import {
   buildGitHubFileContent,
@@ -27,6 +28,7 @@ import {
   mockReleases,
   mockTags,
   assertNoHasUpdate,
+  mockReleaseData,
 } from './helpers';
 import {expect} from 'chai';
 import * as assert from 'assert';
@@ -35,6 +37,7 @@ import {PullRequest} from '../src/pull-request';
 import {readFileSync} from 'fs';
 import {resolve} from 'path';
 import * as pluginFactory from '../src/factories/plugin-factory';
+import {SentenceCase} from '../src/plugins/sentence-case';
 import {NodeWorkspace} from '../src/plugins/node-workspace';
 import {CargoWorkspace} from '../src/plugins/cargo-workspace';
 import {PullRequestTitle} from '../src/util/pull-request-title';
@@ -46,8 +49,14 @@ import {
   DuplicateReleaseError,
   FileNotFoundError,
   ConfigurationError,
+  GitHubAPIError,
 } from '../src/errors';
 import {RequestError} from '@octokit/request-error';
+import * as nock from 'nock';
+import {LinkedVersions} from '../src/plugins/linked-versions';
+import {MavenWorkspace} from '../src/plugins/maven-workspace';
+
+nock.disableNetConnect();
 
 const sandbox = sinon.createSandbox();
 const fixturesPath = './test/fixtures';
@@ -86,6 +95,7 @@ function mockPullRequests(
 function mockCreateRelease(
   github: GitHub,
   releases: {
+    id: number;
     sha: string;
     tagName: string;
     draft?: boolean;
@@ -94,7 +104,7 @@ function mockCreateRelease(
   }[]
 ): sinon.SinonStub {
   const releaseStub = sandbox.stub(github, 'createRelease');
-  for (const {sha, tagName, draft, duplicate} of releases) {
+  for (const {id, sha, tagName, draft, duplicate} of releases) {
     const stub = releaseStub.withArgs(
       sinon.match.has(
         'tag',
@@ -122,6 +132,7 @@ function mockCreateRelease(
       );
     } else {
       stub.resolves({
+        id,
         tagName,
         sha,
         url: 'https://path/to/release',
@@ -455,10 +466,25 @@ describe('Manifest', () => {
             'manifest/versions/versions.json'
           )
         );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest['labels']).to.deep.equal(['custom: pending']);
+      expect(manifest['releaseLabels']).to.deep.equal(['custom: tagged']);
+    });
+    it('should read extra labels from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
       getFileContentsStub
         .withArgs('release-please-config.json', 'main')
         .resolves(
-          buildGitHubFileContent(fixturesPath, 'manifest/config/labels.json')
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/extra-labels.json'
+          )
         )
         .withArgs('.release-please-manifest.json', 'main')
         .resolves(
@@ -471,8 +497,43 @@ describe('Manifest', () => {
         github,
         github.repository.defaultBranch
       );
-      expect(manifest['labels']).to.deep.equal(['custom: pending']);
-      expect(manifest['releaseLabels']).to.deep.equal(['custom: tagged']);
+      expect(manifest.repositoryConfig['.'].extraLabels).to.deep.equal([
+        'lang: java',
+      ]);
+      expect(manifest.repositoryConfig['node-lib'].extraLabels).to.deep.equal([
+        'lang: nodejs',
+      ]);
+    });
+    it('should read exclude paths from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/exclude-paths.json'
+          )
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest.repositoryConfig['.'].excludePaths).to.deep.equal([
+        'path-root-ignore',
+      ]);
+      expect(manifest.repositoryConfig['node-lib'].excludePaths).to.deep.equal([
+        'path-ignore',
+      ]);
     });
     it('should build simple plugins from manifest', async () => {
       const getFileContentsStub = sandbox.stub(
@@ -495,10 +556,9 @@ describe('Manifest', () => {
         github,
         github.repository.defaultBranch
       );
-      expect(manifest['plugins']).to.deep.equal([
-        'node-workspace',
-        'cargo-workspace',
-      ]);
+      expect(manifest.plugins).lengthOf(2);
+      expect(manifest.plugins[0]).instanceOf(NodeWorkspace);
+      expect(manifest.plugins[1]).instanceOf(CargoWorkspace);
     });
     it('should build complex plugins from manifest', async () => {
       const getFileContentsStub = sandbox.stub(
@@ -524,13 +584,40 @@ describe('Manifest', () => {
         github,
         github.repository.defaultBranch
       );
-      expect(manifest['plugins']).to.deep.equal([
-        {
-          type: 'linked-versions',
-          groupName: 'grouped components',
-          components: ['pkg2', 'pkg3'],
-        },
-      ]);
+      expect(manifest.plugins).lengthOf(1);
+      expect(manifest.plugins[0]).instanceOf(LinkedVersions);
+      const plugin = manifest.plugins[0] as LinkedVersions;
+      expect(plugin.groupName).to.eql('grouped components');
+      expect(plugin.components).to.eql(new Set(['pkg2', 'pkg3']));
+    });
+    it('should build maven-workspace from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/maven-workspace-plugins.json'
+          )
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest.plugins).lengthOf(1);
+      expect(manifest.plugins[0]).instanceOf(MavenWorkspace);
+      const plugin = manifest.plugins[0] as MavenWorkspace;
+      expect(plugin.considerAllArtifacts).to.be.true;
     });
     it('should configure search depth from manifest', async () => {
       const getFileContentsStub = sandbox.stub(
@@ -592,6 +679,100 @@ describe('Manifest', () => {
       ).to.eql('https://override.example.com');
     });
 
+    it('should read changelog type from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/changelog-type.json'
+          )
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest.repositoryConfig['.'].changelogType).to.eql('github');
+      expect(
+        manifest.repositoryConfig['packages/bot-config-utils'].changelogType
+      ).to.eql('default');
+    });
+
+    it('should read changelog path from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/changelog-path.json'
+          )
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest.repositoryConfig['.'].changelogPath).to.eql(
+        'docs/foo.md'
+      );
+      expect(
+        manifest.repositoryConfig['packages/bot-config-utils'].changelogPath
+      ).to.eql('docs/bar.md');
+    });
+
+    it('should read versioning type from manifest', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/config/versioning.json'
+          )
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      const manifest = await Manifest.fromManifest(
+        github,
+        github.repository.defaultBranch
+      );
+      expect(manifest.repositoryConfig['.'].versioning).to.eql(
+        'always-bump-patch'
+      );
+      expect(
+        manifest.repositoryConfig['packages/bot-config-utils'].versioning
+      ).to.eql('default');
+    });
+
     it('should throw a configuration error for a missing manifest config', async () => {
       const getFileContentsStub = sandbox.stub(
         github,
@@ -628,6 +809,55 @@ describe('Manifest', () => {
         await Manifest.fromManifest(github, github.repository.defaultBranch);
       }, ConfigurationError);
     });
+
+    it('should throw a configuration error for a malformed manifest config', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(buildGitHubFileRaw('{"malformed json"'))
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(
+          buildGitHubFileContent(
+            fixturesPath,
+            'manifest/versions/versions.json'
+          )
+        );
+      await assert.rejects(
+        async () => {
+          await Manifest.fromManifest(github, github.repository.defaultBranch);
+        },
+        e => {
+          console.log(e);
+          return e instanceof ConfigurationError && e.message.includes('parse');
+        }
+      );
+    });
+
+    it('should throw a configuration error for a malformed manifest config', async () => {
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('release-please-config.json', 'main')
+        .resolves(
+          buildGitHubFileContent(fixturesPath, 'manifest/config/config.json')
+        )
+        .withArgs('.release-please-manifest.json', 'main')
+        .resolves(buildGitHubFileRaw('{"malformed json"'));
+      await assert.rejects(
+        async () => {
+          await Manifest.fromManifest(github, github.repository.defaultBranch);
+        },
+        e => {
+          console.log(e);
+          return e instanceof ConfigurationError && e.message.includes('parse');
+        }
+      );
+    });
   });
 
   describe('fromConfig', () => {
@@ -650,6 +880,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v1.2.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -684,6 +915,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v1.2.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -721,6 +953,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v1.2.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -756,6 +989,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'foobar-v1.2.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -791,6 +1025,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'other-v3.3.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -873,6 +1108,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'other-v3.3.3',
           sha: 'def234',
           url: 'http://path/to/release',
@@ -924,11 +1160,13 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'other-v3.3.3',
           sha: 'abc123',
           url: 'http://path/to/release',
         },
         {
+          id: 654321,
           tagName: 'other-v3.3.2',
           sha: 'def234',
           url: 'http://path/to/release',
@@ -1039,11 +1277,13 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v3.3.2',
           sha: 'def234',
           url: 'http://path/to/release',
         },
         {
+          id: 654321,
           tagName: 'v3.3.1',
           sha: 'ghi345',
           url: 'http://path/to/release',
@@ -1084,6 +1324,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v1.2.3',
           sha: 'abc123',
           url: 'http://path/to/release',
@@ -1169,6 +1410,7 @@ describe('Manifest', () => {
       ]);
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v3.3.1',
           sha: 'ghi345',
           url: 'http://path/to/release',
@@ -1192,6 +1434,36 @@ describe('Manifest', () => {
         '3.3.1'
       );
     });
+
+    it('should fail if graphQL commits API is too slow', async () => {
+      // In this scenario, graphQL fails with a 502 when pulling the list of
+      // recent commits. We are unable to determine the latest release and thus
+      // we should abort with the underlying API error.
+      const scope = nock('https://api.github.com/')
+        .post('/graphql')
+        .times(6) // original + 5 retries
+        .reply(502);
+      const sleepStub = sandbox.stub(githubModule, 'sleepInMs').resolves();
+      await assert.rejects(
+        async () => {
+          await Manifest.fromConfig(github, 'target-branch', {
+            releaseType: 'simple',
+            bumpMinorPreMajor: true,
+            bumpPatchForMinorPreMajor: true,
+            component: 'foobar',
+            includeComponentInTag: false,
+          });
+        },
+        error => {
+          return (
+            error instanceof GitHubAPIError &&
+            (error as GitHubAPIError).status === 502
+          );
+        }
+      );
+      scope.done();
+      sinon.assert.callCount(sleepStub, 5);
+    });
   });
 
   describe('buildPullRequests', () => {
@@ -1199,6 +1471,7 @@ describe('Manifest', () => {
       beforeEach(() => {
         mockReleases(sandbox, github, [
           {
+            id: 123456,
             sha: 'abc123',
             tagName: 'v1.0.0',
             url: 'https://github.com/fake-owner/fake-repo/releases/tag/v1.0.0',
@@ -1367,11 +1640,34 @@ describe('Manifest', () => {
         const pullRequest = pullRequests[0];
         expect(pullRequest.title.toString()).to.eql('release: 1.0.1');
       });
+
+      it('allows customizing pull request header', async () => {
+        const manifest = new Manifest(
+          github,
+          'main',
+          {
+            '.': {
+              releaseType: 'simple',
+              pullRequestHeader: 'No beep boop for you',
+            },
+          },
+          {
+            '.': Version.parse('1.0.0'),
+          }
+        );
+        const pullRequests = await manifest.buildPullRequests();
+        expect(pullRequests).lengthOf(1);
+        const pullRequest = pullRequests[0];
+        expect(pullRequest.body.header.toString()).to.eql(
+          'No beep boop for you'
+        );
+      });
     });
 
     it('should find the component from config', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
@@ -1435,11 +1731,13 @@ describe('Manifest', () => {
     it('should handle multiple package repository', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v0.2.3',
@@ -1519,11 +1817,13 @@ describe('Manifest', () => {
     it('should allow creating multiple pull requests', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v1.0.0',
@@ -1606,11 +1906,13 @@ describe('Manifest', () => {
     it('should allow forcing release-as on a single component', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v1.0.0',
@@ -1697,11 +1999,13 @@ describe('Manifest', () => {
     it('should allow forcing release-as on entire manifest', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v1.0.0',
@@ -1843,11 +2147,13 @@ describe('Manifest', () => {
     it('should allow specifying a last release sha', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v1.0.0',
@@ -1934,26 +2240,31 @@ describe('Manifest', () => {
     it('should allow customizing pull request title with root package', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 1,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 2,
           sha: 'abc123',
           tagName: 'root-v1.2.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/root-v1.2.0',
         },
         {
+          id: 3,
           sha: 'def234',
           tagName: 'pkg1-v1.0.1',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.1',
         },
         {
+          id: 4,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v0.2.3',
         },
         {
+          id: 5,
           sha: 'def234',
           tagName: 'root-v1.2.1',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/root-v1.2.1',
@@ -2045,16 +2356,19 @@ describe('Manifest', () => {
     it('should allow customizing pull request title without root package', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 1,
           sha: 'abc123',
           tagName: 'pkg1-v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
         },
         {
+          id: 2,
           sha: 'def234',
           tagName: 'pkg1-v1.0.1',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.1',
         },
         {
+          id: 3,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v0.2.3',
@@ -2184,6 +2498,7 @@ describe('Manifest', () => {
     it('should not update manifest if unpublished version is created', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           tagName: 'v1.2.3',
           sha: 'def234',
           url: 'http://path/to/release',
@@ -2232,6 +2547,7 @@ describe('Manifest', () => {
       beforeEach(() => {
         mockReleases(sandbox, github, [
           {
+            id: 123456,
             sha: 'abc123',
             tagName: 'v1.0.0',
             url: 'https://github.com/fake-owner/fake-repo/releases/tag/v1.0.0',
@@ -2361,6 +2677,7 @@ describe('Manifest', () => {
     it('should allow overriding commit message', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/v1.0.0',
@@ -2423,11 +2740,13 @@ describe('Manifest', () => {
       beforeEach(() => {
         mockReleases(sandbox, github, [
           {
+            id: 123456,
             sha: 'abc123',
             tagName: 'pkg1-v1.0.0',
             url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg1-v1.0.0',
           },
           {
+            id: 654321,
             sha: 'def234',
             tagName: 'pkg2-v0.2.3',
             url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v1.0.0',
@@ -2436,7 +2755,7 @@ describe('Manifest', () => {
         mockCommits(sandbox, github, [
           {
             sha: 'aaaaaa',
-            message: 'fix: some bugfix',
+            message: 'fix: some bugfix\nfix:another fix',
             files: ['path/a/foo'],
           },
           {
@@ -2483,6 +2802,14 @@ describe('Manifest', () => {
       });
 
       it('should load and run a single plugins', async () => {
+        const mockPlugin = sandbox.createStubInstance(NodeWorkspace);
+        mockPlugin.run.returnsArg(0);
+        mockPlugin.preconfigure.returnsArg(0);
+        mockPlugin.processCommits.returnsArg(0);
+        sandbox
+          .stub(pluginFactory, 'buildPlugin')
+          .withArgs(sinon.match.has('type', 'node-workspace'))
+          .returns(mockPlugin);
         const manifest = new Manifest(
           github,
           'main',
@@ -2507,19 +2834,26 @@ describe('Manifest', () => {
             plugins: ['node-workspace'],
           }
         );
-        const mockPlugin = sandbox.createStubInstance(NodeWorkspace);
-        mockPlugin.run.returnsArg(0);
-        mockPlugin.preconfigure.returnsArg(0);
-        sandbox
-          .stub(pluginFactory, 'buildPlugin')
-          .withArgs(sinon.match.has('type', 'node-workspace'))
-          .returns(mockPlugin);
         const pullRequests = await manifest.buildPullRequests();
         expect(pullRequests).not.empty;
         sinon.assert.calledOnce(mockPlugin.run);
       });
 
       it('should load and run multiple plugins', async () => {
+        const mockPlugin = sandbox.createStubInstance(NodeWorkspace);
+        mockPlugin.run.returnsArg(0);
+        mockPlugin.preconfigure.returnsArg(0);
+        mockPlugin.processCommits.returnsArg(0);
+        const mockPlugin2 = sandbox.createStubInstance(CargoWorkspace);
+        mockPlugin2.run.returnsArg(0);
+        mockPlugin2.preconfigure.returnsArg(0);
+        mockPlugin2.processCommits.returnsArg(0);
+        sandbox
+          .stub(pluginFactory, 'buildPlugin')
+          .withArgs(sinon.match.has('type', 'node-workspace'))
+          .returns(mockPlugin)
+          .withArgs(sinon.match.has('type', 'cargo-workspace'))
+          .returns(mockPlugin2);
         const manifest = new Manifest(
           github,
           'main',
@@ -2544,22 +2878,67 @@ describe('Manifest', () => {
             plugins: ['node-workspace', 'cargo-workspace'],
           }
         );
-        const mockPlugin = sandbox.createStubInstance(NodeWorkspace);
-        mockPlugin.run.returnsArg(0);
-        mockPlugin.preconfigure.returnsArg(0);
-        const mockPlugin2 = sandbox.createStubInstance(CargoWorkspace);
-        mockPlugin2.run.returnsArg(0);
-        mockPlugin2.preconfigure.returnsArg(0);
-        sandbox
-          .stub(pluginFactory, 'buildPlugin')
-          .withArgs(sinon.match.has('type', 'node-workspace'))
-          .returns(mockPlugin)
-          .withArgs(sinon.match.has('type', 'cargo-workspace'))
-          .returns(mockPlugin2);
         const pullRequests = await manifest.buildPullRequests();
         expect(pullRequests).not.empty;
         sinon.assert.calledOnce(mockPlugin.run);
         sinon.assert.calledOnce(mockPlugin2.run);
+      });
+
+      it('should apply plugin hook "processCommits"', async () => {
+        const spyPlugin = sinon.spy(new SentenceCase(github, 'main', {}));
+        sandbox
+          .stub(pluginFactory, 'buildPlugin')
+          .withArgs(sinon.match.has('type', 'sentence-case'))
+          // TS compiler is having issues with sinon.spy.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .returns(spyPlugin as any as InstanceType<typeof SentenceCase>);
+        const manifest = new Manifest(
+          github,
+          'main',
+          {
+            'path/a': {
+              releaseType: 'node',
+              component: 'pkg1',
+              packageName: 'pkg1',
+            },
+          },
+          {
+            'path/a': Version.parse('1.0.0'),
+          },
+          {
+            plugins: ['sentence-case'],
+          }
+        );
+        const pullRequests = await manifest.buildPullRequests();
+        expect(pullRequests).not.empty;
+        // This assertion verifies that conventional commit parsing
+        // was applied before calling the processCommits plugin hook:
+        sinon.assert.calledWith(spyPlugin.processCommits, [
+          {
+            sha: 'aaaaaa',
+            message: 'fix: Another fix',
+            files: ['path/a/foo'],
+            pullRequest: undefined,
+            type: 'fix',
+            scope: null,
+            bareMessage: 'Another fix',
+            notes: [],
+            references: [],
+            breaking: false,
+          },
+          {
+            sha: 'aaaaaa',
+            message: 'fix: Some bugfix',
+            files: ['path/a/foo'],
+            pullRequest: undefined,
+            type: 'fix',
+            scope: null,
+            bareMessage: 'Some bugfix',
+            notes: [],
+            references: [],
+            breaking: false,
+          },
+        ]);
       });
     });
 
@@ -2629,11 +3008,13 @@ describe('Manifest', () => {
     it('should handle mixing componentless configs', async () => {
       mockReleases(sandbox, github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'v1.0.0',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/v1.0.0',
         },
         {
+          id: 654321,
           sha: 'def234',
           tagName: 'pkg2-v0.2.3',
           url: 'https://github.com/fake-owner/fake-repo/releases/tag/pkg2-v0.2.3',
@@ -3149,10 +3530,13 @@ describe('Manifest', () => {
           files: [],
         });
       sandbox
-        .stub(github, 'createReleasePullRequest')
+        .stub(github, 'createPullRequest')
         .withArgs(
-          sinon.match.has('headRefName', 'release-please/branches/main'),
-          'main'
+          sinon.match.has('headBranchName', 'release-please/branches/main'),
+          'main',
+          sinon.match.string,
+          sinon.match.array,
+          sinon.match({fork: false, draft: false})
         )
         .resolves({
           number: 123,
@@ -3164,8 +3548,11 @@ describe('Manifest', () => {
           files: [],
         })
         .withArgs(
-          sinon.match.has('headRefName', 'release-please/branches/main2'),
-          'main'
+          sinon.match.has('headBranchName', 'release-please/branches/main2'),
+          'main',
+          sinon.match.string,
+          sinon.match.array,
+          sinon.match({fork: false, draft: false})
         )
         .resolves({
           number: 124,
@@ -3447,6 +3834,174 @@ describe('Manifest', () => {
       expect(pullRequestNumbers).lengthOf(1);
     });
 
+    describe('with an overflowing body', () => {
+      const body = new PullRequestBody(mockReleaseData(1000), {
+        useComponents: true,
+      });
+
+      it('updates an existing pull request', async function () {
+        sandbox
+          .stub(github, 'getFileContentsOnBranch')
+          .withArgs('README.md', 'main')
+          .resolves(buildGitHubFileRaw('some-content'));
+        stubSuggesterWithSnapshot(sandbox, this.test!.fullTitle());
+        mockPullRequests(
+          github,
+          [
+            {
+              number: 22,
+              title: 'pr title1',
+              body: pullRequestBody('release-notes/single.txt'),
+              headBranchName: 'release-please/branches/main',
+              baseBranchName: 'main',
+              labels: ['autorelease: pending'],
+              files: [],
+            },
+          ],
+          []
+        );
+        sandbox
+          .stub(github, 'updatePullRequest')
+          .withArgs(
+            22,
+            sinon.match.any,
+            sinon.match.any,
+            sinon.match.has('pullRequestOverflowHandler', sinon.match.truthy)
+          )
+          .resolves({
+            number: 22,
+            title: 'pr title1',
+            body: 'pr body1',
+            headBranchName: 'release-please/branches/main',
+            baseBranchName: 'main',
+            labels: [],
+            files: [],
+          });
+        const manifest = new Manifest(
+          github,
+          'main',
+          {
+            'path/a': {
+              releaseType: 'node',
+              component: 'pkg1',
+            },
+            'path/b': {
+              releaseType: 'node',
+              component: 'pkg2',
+            },
+          },
+          {
+            'path/a': Version.parse('1.0.0'),
+            'path/b': Version.parse('0.2.3'),
+          },
+          {
+            separatePullRequests: true,
+            plugins: ['node-workspace'],
+          }
+        );
+        sandbox.stub(manifest, 'buildPullRequests').resolves([
+          {
+            title: PullRequestTitle.ofTargetBranch('main'),
+            body,
+            updates: [
+              {
+                path: 'README.md',
+                createIfMissing: false,
+                updater: new RawContent('some raw content'),
+              },
+            ],
+            labels: [],
+            headRefName: 'release-please/branches/main',
+            draft: false,
+          },
+        ]);
+        const pullRequestNumbers = await manifest.createPullRequests();
+        expect(pullRequestNumbers).lengthOf(1);
+      });
+
+      it('ignores an existing pull request if there are no changes', async function () {
+        sandbox
+          .stub(github, 'getFileContentsOnBranch')
+          .withArgs('README.md', 'main')
+          .resolves(buildGitHubFileRaw('some-content'))
+          .withArgs('release-notes.md', 'my-head-branch--release-notes')
+          .resolves(buildGitHubFileRaw(body.toString()));
+        stubSuggesterWithSnapshot(sandbox, this.test!.fullTitle());
+        mockPullRequests(
+          github,
+          [
+            {
+              number: 22,
+              title: 'pr title1',
+              body: pullRequestBody('release-notes/overflow.txt'),
+              headBranchName: 'release-please/branches/main',
+              baseBranchName: 'main',
+              labels: ['autorelease: pending'],
+              files: [],
+            },
+          ],
+          []
+        );
+        sandbox
+          .stub(github, 'updatePullRequest')
+          .withArgs(
+            22,
+            sinon.match.any,
+            sinon.match.any,
+            sinon.match.has('pullRequestOverflowHandler', sinon.match.truthy)
+          )
+          .resolves({
+            number: 22,
+            title: 'pr title1',
+            body: 'pr body1',
+            headBranchName: 'release-please/branches/main',
+            baseBranchName: 'main',
+            labels: [],
+            files: [],
+          });
+        const manifest = new Manifest(
+          github,
+          'main',
+          {
+            'path/a': {
+              releaseType: 'node',
+              component: 'pkg1',
+            },
+            'path/b': {
+              releaseType: 'node',
+              component: 'pkg2',
+            },
+          },
+          {
+            'path/a': Version.parse('1.0.0'),
+            'path/b': Version.parse('0.2.3'),
+          },
+          {
+            separatePullRequests: true,
+            plugins: ['node-workspace'],
+          }
+        );
+        sandbox.stub(manifest, 'buildPullRequests').resolves([
+          {
+            title: PullRequestTitle.ofTargetBranch('main'),
+            body,
+            updates: [
+              {
+                path: 'README.md',
+                createIfMissing: false,
+                updater: new RawContent('some raw content'),
+              },
+            ],
+            labels: [],
+            headRefName: 'release-please/branches/main',
+            draft: false,
+          },
+        ]);
+        const pullRequestNumbers = await manifest.createPullRequests();
+        expect(pullRequestNumbers).lengthOf(0);
+      });
+    });
+
     it('updates an existing snapshot pull request', async function () {
       sandbox
         .stub(github, 'getFileContentsOnBranch')
@@ -3678,7 +4233,7 @@ describe('Manifest', () => {
     it('ignores snoozed, closed pull request if there are no changes', async () => {
       const body = new PullRequestBody([
         {
-          notes: 'Some release notes',
+          notes: '## 1.1.0\n\nSome release notes',
         },
       ]);
       sandbox
@@ -4574,6 +5129,177 @@ describe('Manifest', () => {
       expect(releases[0].notes).to.be.a('string');
       expect(releases[0].path).to.eql('.');
     });
+
+    it('should find the correct number of releases with a componentless tag', async () => {
+      mockPullRequests(
+        github,
+        [],
+        [
+          {
+            headBranchName: 'release-please--branches--main',
+            baseBranchName: 'main',
+            number: 2,
+            title: 'chore: release v1.0.1',
+            body: pullRequestBody('release-notes/grouped.txt'),
+            labels: ['autorelease: pending'],
+            files: [],
+            sha: 'abc123',
+          },
+        ]
+      );
+      const manifest = new Manifest(
+        github,
+        'main',
+        {
+          '.': {
+            releaseType: 'simple',
+            pullRequestTitlePattern: 'chore: release v${version}',
+            component: 'base',
+            includeComponentInTag: false,
+          },
+          api: {
+            releaseType: 'simple',
+            component: 'api',
+          },
+          chat: {
+            releaseType: 'simple',
+            component: 'chat',
+          },
+          cmds: {
+            releaseType: 'simple',
+            component: 'cmds',
+          },
+          presence: {
+            releaseType: 'simple',
+            component: 'presence',
+          },
+        },
+        {
+          '.': Version.parse('1.0.0'),
+          api: Version.parse('1.0.0'),
+          chat: Version.parse('1.0.0'),
+          cmds: Version.parse('1.0.0'),
+          presence: Version.parse('1.0.0'),
+        },
+        {
+          groupPullRequestTitlePattern: 'chore: release v${version}',
+        }
+      );
+      const releases = await manifest.buildReleases();
+      expect(releases).lengthOf(2);
+    });
+
+    it('should handle overflowing release notes', async () => {
+      mockPullRequests(
+        github,
+        [],
+        [
+          {
+            headBranchName: 'release-please/branches/main',
+            baseBranchName: 'main',
+            number: 1234,
+            title: 'chore: release main',
+            body: pullRequestBody('release-notes/overflow.txt'),
+            labels: ['autorelease: pending'],
+            files: [
+              'packages/bot-config-utils/package.json',
+              'packages/label-utils/package.json',
+              'packages/object-selector/package.json',
+              'packages/datastore-lock/package.json',
+            ],
+            sha: 'abc123',
+          },
+        ]
+      );
+      const getFileContentsStub = sandbox.stub(
+        github,
+        'getFileContentsOnBranch'
+      );
+      getFileContentsStub
+        .withArgs('packages/bot-config-utils/package.json', 'main')
+        .resolves(
+          buildGitHubFileRaw(
+            JSON.stringify({name: '@google-automations/bot-config-utils'})
+          )
+        )
+        .withArgs('packages/label-utils/package.json', 'main')
+        .resolves(
+          buildGitHubFileRaw(
+            JSON.stringify({name: '@google-automations/label-utils'})
+          )
+        )
+        .withArgs('packages/object-selector/package.json', 'main')
+        .resolves(
+          buildGitHubFileRaw(
+            JSON.stringify({name: '@google-automations/object-selector'})
+          )
+        )
+        .withArgs('packages/datastore-lock/package.json', 'main')
+        .resolves(
+          buildGitHubFileRaw(
+            JSON.stringify({name: '@google-automations/datastore-lock'})
+          )
+        )
+        // This branch is parsed from the overflow PR body
+        .withArgs('release-notes.md', 'my-head-branch--release-notes')
+        .resolves(
+          buildGitHubFileRaw(pullRequestBody('release-notes/multiple.txt'))
+        );
+      const manifest = new Manifest(
+        github,
+        'main',
+        {
+          'packages/bot-config-utils': {
+            releaseType: 'node',
+          },
+          'packages/label-utils': {
+            releaseType: 'node',
+          },
+          'packages/object-selector': {
+            releaseType: 'node',
+          },
+          'packages/datastore-lock': {
+            releaseType: 'node',
+          },
+        },
+        {
+          'packages/bot-config-utils': Version.parse('3.1.4'),
+          'packages/label-utils': Version.parse('1.0.1'),
+          'packages/object-selector': Version.parse('1.0.2'),
+          'packages/datastore-lock': Version.parse('2.0.0'),
+        }
+      );
+      const releases = await manifest.buildReleases();
+      expect(releases).lengthOf(4);
+      expect(releases[0].tag.toString()).to.eql('bot-config-utils-v3.2.0');
+      expect(releases[0].sha).to.eql('abc123');
+      expect(releases[0].notes)
+        .to.be.a('string')
+        .and.satisfy((msg: string) => msg.startsWith('### Features'));
+      expect(releases[0].path).to.eql('packages/bot-config-utils');
+      expect(releases[0].name).to.eql('bot-config-utils: v3.2.0');
+      expect(releases[1].tag.toString()).to.eql('label-utils-v1.1.0');
+      expect(releases[1].sha).to.eql('abc123');
+      expect(releases[1].notes)
+        .to.be.a('string')
+        .and.satisfy((msg: string) => msg.startsWith('### Features'));
+      expect(releases[1].path).to.eql('packages/label-utils');
+      expect(releases[1].name).to.eql('label-utils: v1.1.0');
+      expect(releases[2].tag.toString()).to.eql('object-selector-v1.1.0');
+      expect(releases[2].sha).to.eql('abc123');
+      expect(releases[2].notes)
+        .to.be.a('string')
+        .and.satisfy((msg: string) => msg.startsWith('### Features'));
+      expect(releases[2].path).to.eql('packages/object-selector');
+      expect(releases[2].name).to.eql('object-selector: v1.1.0');
+      expect(releases[3].tag.toString()).to.eql('datastore-lock-v2.1.0');
+      expect(releases[3].sha).to.eql('abc123');
+      expect(releases[3].notes)
+        .to.be.a('string')
+        .and.satisfy((msg: string) => msg.startsWith('### Features'));
+      expect(releases[3].path).to.eql('packages/datastore-lock');
+      expect(releases[3].name).to.eql('datastore-lock: v2.1.0');
+    });
   });
 
   describe('createReleases', () => {
@@ -4606,7 +5332,7 @@ describe('Manifest', () => {
           )
         );
       mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'release-brancher-v1.3.1'},
+        {id: 123456, sha: 'abc123', tagName: 'release-brancher-v1.3.1'},
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();
@@ -4697,10 +5423,10 @@ describe('Manifest', () => {
         );
 
       mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'bot-config-utils-v3.2.0'},
-        {sha: 'abc123', tagName: 'label-utils-v1.1.0'},
-        {sha: 'abc123', tagName: 'object-selector-v1.1.0'},
-        {sha: 'abc123', tagName: 'datastore-lock-v2.1.0'},
+        {id: 1, sha: 'abc123', tagName: 'bot-config-utils-v3.2.0'},
+        {id: 2, sha: 'abc123', tagName: 'label-utils-v1.1.0'},
+        {id: 3, sha: 'abc123', tagName: 'object-selector-v1.1.0'},
+        {id: 4, sha: 'abc123', tagName: 'datastore-lock-v2.1.0'},
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();
@@ -4795,7 +5521,9 @@ describe('Manifest', () => {
           '.': Version.parse('3.2.6'),
         }
       );
-      mockCreateRelease(github, [{sha: 'abc123', tagName: 'v3.2.7'}]);
+      mockCreateRelease(github, [
+        {id: 123456, sha: 'abc123', tagName: 'v3.2.7'},
+      ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const releases = await manifest.createReleases();
       expect(releases).lengthOf(1);
@@ -4845,7 +5573,7 @@ describe('Manifest', () => {
           )
         );
       mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'release-brancher-v1.3.1'},
+        {id: 123456, sha: 'abc123', tagName: 'release-brancher-v1.3.1'},
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();
@@ -4915,7 +5643,12 @@ describe('Manifest', () => {
           )
         );
       const githubReleaseStub = mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'release-brancher-v1.3.1', draft: true},
+        {
+          id: 123456,
+          sha: 'abc123',
+          tagName: 'release-brancher-v1.3.1',
+          draft: true,
+        },
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();
@@ -4990,6 +5723,7 @@ describe('Manifest', () => {
         );
       const githubReleaseStub = mockCreateRelease(github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'release-brancher-v1.3.1-beta1',
           prerelease: true,
@@ -5066,6 +5800,7 @@ describe('Manifest', () => {
         );
       const githubReleaseStub = mockCreateRelease(github, [
         {
+          id: 123456,
           sha: 'abc123',
           tagName: 'release-brancher-v1.3.1',
           prerelease: false,
@@ -5165,10 +5900,15 @@ describe('Manifest', () => {
         );
 
       mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'bot-config-utils-v3.2.0', duplicate: true},
-        {sha: 'abc123', tagName: 'label-utils-v1.1.0'},
-        {sha: 'abc123', tagName: 'object-selector-v1.1.0'},
-        {sha: 'abc123', tagName: 'datastore-lock-v2.1.0'},
+        {
+          id: 1,
+          sha: 'abc123',
+          tagName: 'bot-config-utils-v3.2.0',
+          duplicate: true,
+        },
+        {id: 2, sha: 'abc123', tagName: 'label-utils-v1.1.0'},
+        {id: 3, sha: 'abc123', tagName: 'object-selector-v1.1.0'},
+        {id: 4, sha: 'abc123', tagName: 'datastore-lock-v2.1.0'},
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();
@@ -5279,10 +6019,25 @@ describe('Manifest', () => {
         );
 
       mockCreateRelease(github, [
-        {sha: 'abc123', tagName: 'bot-config-utils-v3.2.0', duplicate: true},
-        {sha: 'abc123', tagName: 'label-utils-v1.1.0', duplicate: true},
-        {sha: 'abc123', tagName: 'object-selector-v1.1.0', duplicate: true},
-        {sha: 'abc123', tagName: 'datastore-lock-v2.1.0', duplicate: true},
+        {
+          id: 1,
+          sha: 'abc123',
+          tagName: 'bot-config-utils-v3.2.0',
+          duplicate: true,
+        },
+        {id: 2, sha: 'abc123', tagName: 'label-utils-v1.1.0', duplicate: true},
+        {
+          id: 3,
+          sha: 'abc123',
+          tagName: 'object-selector-v1.1.0',
+          duplicate: true,
+        },
+        {
+          id: 4,
+          sha: 'abc123',
+          tagName: 'datastore-lock-v2.1.0',
+          duplicate: true,
+        },
       ]);
       const commentStub = sandbox.stub(github, 'commentOnIssue').resolves();
       const addLabelsStub = sandbox.stub(github, 'addIssueLabels').resolves();

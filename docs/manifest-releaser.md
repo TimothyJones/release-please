@@ -1,6 +1,6 @@
 # Manifest Driven release-please
 
-release-please can be setup to use source controlled files containing releaser
+release-please can be setup to use source-controlled files containing releaser
 specific configuration (the `release-please-config.json`) as well package
 version tracking (the `.release-please-manifest.json`).
 
@@ -55,7 +55,7 @@ flag in the next step).
 
 Run release-please:
 ```sh
-release-please [--token=your/apikey.txt] [--target-branch=testing] release-pr
+release-please [--token=your/apikey.txt] --repo-url=<owner>/<repo> [--target-branch=testing] release-pr
 ```
 
 The resulting PR will assume a default starting version for your package
@@ -84,7 +84,7 @@ this config value will be ignored for all subsequent runs and can be removed.
 The simplest way to tell release-please the current version for a package
 it has never released before is to manually add an entry into
 `.release-please-manifest.json`. This change should be made directly on the
-default/configured branch or on a separate, user created branch/PR which is then
+default/configured branch or on a separate, user-created branch/PR which is then
 merged into the default/configured branch.
 
 ```js
@@ -114,9 +114,10 @@ minimal content required defines at least one package:
   }
 }
 ```
-The following example shows all the possibilities. Note: for illustration
-purposes the top level values set here are **NOT** the defaults (those are
-documented in comments)
+The following example shows most of the available options. See the documented
+[JSON schema](/schemas/config.json) for the complete configuration definition.
+Note: for illustration purposes the top level values set here are **NOT** the
+defaults (those are documented in comments)
 ```js
 {
   // if this is the first time running `manifest-pr` on a repo
@@ -190,7 +191,9 @@ documented in comments)
   "prerelease": true
 
   // Skip creating GitHub Releases
-  // absence defaults to false and Releases will be created
+  // Absence defaults to false and Releases will be created. Release-Please still
+  // requires releases to be tagged, so this option should only be used if you
+  // have existing infrastructure to tag these releases.
   "skip-github-release": true,
 
   // when using the `node-workspace` plugin, package discovery forces all
@@ -236,7 +239,7 @@ documented in comments)
   // large numbers of packages at once.
   // absence defaults to false, causing calls to be issued concurrently.
   "sequential-calls": false,
-  
+
 
   // per package configuration: at least one entry required.
   // the key is the relative path from the repo root to the folder that contains
@@ -259,7 +262,10 @@ documented in comments)
     ".": {
       // overrides release-type for node
       "release-type": "node",
+      // exclude commits from that path from processing
+      "exclude-paths": ["path/to/myPyPkgA"]
     },
+
     // path segment should be relative to repository root
     "path/to/myJSPkgA": {
       // overrides release-type for node
@@ -279,7 +285,7 @@ documented in comments)
     "path/to/my-rust-crate", {
       // override release-type for rust
       "release-type": "rust"
-    }
+    },
 
     "path/to/myPyPkgA": {
       // when a default release-as is set, this is how you revert to using
@@ -292,6 +298,7 @@ documented in comments)
       // our change log is located at path/to/myPyPkgA/docs/CHANGES.rst
       "changelog-path": "docs/CHANGES.rst"
     },
+
     "path/to/github-enterprise-package", {
       // override changelog host for github enterprise package
       "changelog-host": "https://example.com"
@@ -299,6 +306,31 @@ documented in comments)
   }
 
 }
+```
+
+## Subsequent Versions
+
+release-please tries to determine the next release based on the previous tagged
+release. The default search tag looks like:
+
+```sh
+<component-name>-v<release-version>
+```
+
+In your specific tagging scheme, your tags could like `v<release-version>`. And
+this will result in an error like:
+
+```sh
+❯ looking for tagName: <component>-v<release-version>
+⚠ Expected 1 releases, only found 0
+```
+
+To fix this, component can be removed from tagName being searched using the
+`include-component-in-tag` property. Setting this to `false` will change the
+tagName to:
+
+```sh
+v<release-version>
 ```
 
 ## Manifest
@@ -444,14 +476,14 @@ It looks at what packages were updated by release-please and updates their
 reference in other packages' dependencies lists. Even when a particular package
 was not updated by release-please, if a dependency did have an update, it will
 be patch bump the package, create a changelog entry, and add it to the list of
-PR changes. Under the hood this plugin adapts specific dependency graph building
+PR changes. Under the hood, this plugin adapts specific dependency graph building
 and updating functionality from the popular
 [lerna](https://github.com/lerna/lerna) tool.
 
 #### Breaking versions
 
 When using the `node-workspace` tool, breaking versions bumps will be included in
-your update pull request. If you don't agree this behavior and would only like
+your update pull request. If you don't agree with this behavior and would only like
 your local dependencies bumped if they are within the SemVer range, you can set the
 `"always-link-local"` option to `false` in your manifest config.
 
@@ -475,5 +507,102 @@ way of managing a Rust monorepo with release-please.
 
 The `maven-workspace` plugin operates similarly to the `node-workspace` plugin,
 but on a multi-artifact Maven workspace. It builds a dependency graph of all
-discovered `pom.xml` files that are configured in the manifest config and updates
-any packages that were directly bumped by release-please.
+discovered `pom.xml` files and updates any packages that were directly bumped
+by release-please.
+
+If you have additional `pom.xml` files that are not directly configured in your
+manifest and you want to skip updating them, then you can set the
+`considerAllArtifacts` option to `false`. If you do so, the plugin will only
+look at the `pom.xml` files configured in the manifest.
+
+### linked-versions
+
+The `linked-versions` plugin allows you to "link" the versions of multiple
+components in your monorepo. When any component in the specified group is
+updated, we pick the highest version amongst the components and update all
+group components to the same version (keeping them in sync).
+
+Note: when combining the `linked-versions` plugin with a `workspace` plugin,
+you will need to tell the `workspace` plugin to skip its own internal merge.
+See #1457 for context.
+
+Example:
+
+```json
+{
+  "release-type": "rust",
+  "packages": {
+    "packages/rustA": {
+      "component": "pkgA"
+    },
+    "packages/rustB": {
+      "component": "pkgB"
+    }
+  },
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": false
+    },
+    {
+      "type": "linked-versions",
+      "group-name": "my group",
+      "components": [
+        "pkgA", "pkgB"
+      ]
+    }
+  ]
+}
+```
+
+### sentence-case
+
+Capitalize the leading word in a commit message, taking into account common exceptions, e.g., gRPC.
+
+As an example:
+
+`fix: patch issues in OpenSSL`
+
+Will be output in the CHANGELOG thusly:
+
+```
+Bug Fixes:
+
+* Patch issues in OpenSSL`
+```
+
+### group-priority
+
+This plugin allows you to configure pull request by priority. If enabled and if a pull request of a
+prioritized group is found, `release-please` will limit the proposed release pull requests to the
+prioritized group only.
+
+
+Example:
+
+```json
+{
+  "release-type": "java",
+  "packages": {
+    "packages/rustA": {
+      "component": "pkgA"
+    },
+    "packages/rustB": {
+      "component": "pkgB"
+    }
+  },
+  "plugins": [
+    {
+      "type": "group-priority",
+      "groups": ["snapshot"]
+    }
+  ]
+}
+```
+
+In the above example, java snapshot PRs are now marked as part of the snapshot group. If you
+configure the `group-priority` plugin with the group set to ['snapshot'], then `release-please`
+will only open pull requests for snapshot pull requests if there are any. This would avoid a
+mix/match of snapshot and non-snapshot version bumps.
+
+The `groups` option is a list of group names sorted with the highest priority first.

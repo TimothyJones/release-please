@@ -69,6 +69,15 @@ describe('PullRequestTitle', () => {
       expect(pullRequestTitle?.getVersion()?.toString()).to.eql('1.2.3');
     });
 
+    it('parses a target branch and component with a slash', () => {
+      const name = 'chore(main): release some/title-test 0.0.1';
+      const pullRequestTitle = PullRequestTitle.parse(name);
+      expect(pullRequestTitle).to.not.be.undefined;
+      expect(pullRequestTitle?.getTargetBranch()).to.eql('main');
+      expect(pullRequestTitle?.getComponent()).to.eql('some/title-test');
+      expect(pullRequestTitle?.getVersion()?.toString()).to.eql('0.0.1');
+    });
+
     it('fails to parse', () => {
       const pullRequestTitle = PullRequestTitle.parse('release-foo');
       expect(pullRequestTitle).to.be.undefined;
@@ -124,7 +133,7 @@ describe('PullRequestTitle', () => {
     it('return matchPattern with default Pattern', () => {
       const matchPattern = generateMatchPattern();
       expect(matchPattern).to.eql(
-        /^chore(\((?<branch>[\w-./]+)\))?: release ?(?<component>[\w-.]*)? v?(?<version>[0-9].*)$/
+        /^chore(\((?<branch>[\w-./]+)\))?: release ?(?<component>@?[\w-./]*)? v?(?<version>[0-9].*)$/
       );
     });
   });
@@ -193,6 +202,16 @@ describe('PullRequestTitle with custom pullRequestTitlePattern', () => {
       expect(pullRequestTitle?.getVersion()?.toString()).to.eql('1.2.3');
     });
 
+    it('parses a component with @ sign prefix', () => {
+      const name = 'chore(main): 🔖 release @example/storage v1.2.3';
+      const pullRequestTitle = PullRequestTitle.parse(
+        name,
+        'chore${scope}: 🔖 release${component} ${version}'
+      );
+      expect(pullRequestTitle).to.not.be.undefined;
+      expect(pullRequestTitle?.getComponent()).to.eql('@example/storage');
+    });
+
     it('fails to parse', () => {
       const pullRequestTitle = PullRequestTitle.parse(
         'release-foo',
@@ -215,15 +234,15 @@ describe('PullRequestTitle with custom pullRequestTitlePattern', () => {
 
     it('parses a complex title and pattern', () => {
       const pullRequestTitle = PullRequestTitle.parse(
-        '[HOTFIX] - chore(hotfix/v3.1.0-bug): release 3.1.0-hotfix1',
-        '[HOTFIX] - chore${scope}: release${component} ${version}'
+        '[HOTFIX] - chore(hotfix/v3.1.0-bug): release 3.1.0-hotfix1 (@example/storage)',
+        '[HOTFIX] - chore${scope}: release ${version} (${component})'
       );
       expect(pullRequestTitle).to.not.be.undefined;
       expect(pullRequestTitle?.getTargetBranch()).to.eql('hotfix/v3.1.0-bug');
       expect(pullRequestTitle?.getVersion()?.toString()).to.eql(
         '3.1.0-hotfix1'
       );
-      expect(pullRequestTitle?.getComponent()).to.be.undefined;
+      expect(pullRequestTitle?.getComponent()).to.eql('@example/storage');
     });
   });
   describe('ofVersion', () => {
@@ -278,7 +297,7 @@ describe('PullRequestTitle with custom pullRequestTitlePattern', () => {
         'chore${scope}: 🔖 release${component} ${version}'
       );
       expect(matchPattern).to.eql(
-        /^chore(\((?<branch>[\w-./]+)\))?: 🔖 release ?(?<component>[\w-.]*)? v?(?<version>[0-9].*)$/
+        /^chore(\((?<branch>[\w-./]+)\))?: 🔖 release ?(?<component>@?[\w-./]*)? v?(?<version>[0-9].*)$/
       );
     });
 

@@ -10,6 +10,8 @@ Options:
                                 debugging).           [boolean] [default: false]
   --trace                       print extra verbose errors (use only for local
                                 debugging).           [boolean] [default: false]
+  --plugin                      load plugin named release-please-<plugin-name>
+                                                           [array] [default: []]
   --token                       GitHub token with repo write permissions
   --api-url                     URL to use when making API requests
                                     [string] [default: "https://api.github.com"]
@@ -28,6 +30,7 @@ Options:
   --monorepo-tags               include library name in tags and release
                                 branches              [boolean] [default: false]
   --pull-request-title-pattern  Title pattern to make release PR        [string]
+  --pull-request-header         Header for release PR                   [string]
   --path                        release from path other than root directory
                                                                         [string]
   --component                   name of component release is being minted for
@@ -36,10 +39,11 @@ Options:
                                                                         [string]
   --release-type                what type of repo is a release being created
                                 for?
-   [choices: "dart", "dotnet-yoshi", "elixir", "go", "go-yoshi", "helm", "java",
-         "java-backport", "java-bom", "java-lts", "java-yoshi", "krm-blueprint",
-   "maven", "node", "ocaml", "php", "php-yoshi", "python", "ruby", "ruby-yoshi",
-                                           "rust", "simple", "terraform-module"]
+   [choices: "dart", "dotnet-yoshi", "elixir", "expo", "go", "go-yoshi", "helm",
+                  "java", "java-backport", "java-bom", "java-lts", "java-yoshi",
+       "java-yoshi-mono-repo", "krm-blueprint", "maven", "node", "ocaml", "php",
+      "php-yoshi", "python", "ruby", "ruby-yoshi", "rust", "salesforce", "sfdx",
+                                                   "simple", "terraform-module"]
   --config-file                 where can the config file be found in the
                                 project? [default: "release-please-config.json"]
   --manifest-file               where can the manifest file be found in the
@@ -74,6 +78,8 @@ Options:
                                                       [boolean] [default: false]
   --trace               print extra verbose errors (use only for local
                         debugging).                   [boolean] [default: false]
+  --plugin              load plugin named release-please-<plugin-name>
+                                                           [array] [default: []]
   --token               GitHub token with repo write permissions
   --api-url             URL to use when making API requests
                                     [string] [default: "https://api.github.com"]
@@ -113,6 +119,8 @@ Options:
                                                       [boolean] [default: false]
   --trace           print extra verbose errors (use only for local debugging).
                                                       [boolean] [default: false]
+  --plugin          load plugin named release-please-<plugin-name>
+                                                           [array] [default: []]
   --token           GitHub token with repo write permissions
   --api-url         URL to use when making API requests
                                     [string] [default: "https://api.github.com"]
@@ -155,6 +163,9 @@ Options:
                                     debugging).       [boolean] [default: false]
   --trace                           print extra verbose errors (use only for
                                     local debugging). [boolean] [default: false]
+  --plugin                          load plugin named
+                                    release-please-<plugin-name>
+                                                           [array] [default: []]
   --token                           GitHub token with repo write permissions
   --api-url                         URL to use when making API requests
                                     [string] [default: "https://api.github.com"]
@@ -184,7 +195,8 @@ Options:
   --snapshot                        is it a snapshot (or pre-release) being
                                     generated?        [boolean] [default: false]
   --versioning-strategy             strategy used for bumping versions
-  [choices: "always-bump-patch", "default", "service-pack"] [default: "default"]
+        [choices: "always-bump-major", "always-bump-minor", "always-bump-patch",
+                                 "default", "service-pack"] [default: "default"]
   --changelog-path                  where can the CHANGELOG be found in the
                                     project?  [string] [default: "CHANGELOG.md"]
   --changelog-type                  type of changelog to build
@@ -217,6 +229,7 @@ Options:
   --monorepo-tags                   include library name in tags and release
                                     branches          [boolean] [default: false]
   --pull-request-title-pattern      Title pattern to make release PR    [string]
+  --pull-request-header             Header for release PR               [string]
   --path                            release from path other than root directory
                                                                         [string]
   --component                       name of component release is being minted
@@ -225,10 +238,11 @@ Options:
                                                                         [string]
   --release-type                    what type of repo is a release being created
                                     for?
-   [choices: "dart", "dotnet-yoshi", "elixir", "go", "go-yoshi", "helm", "java",
-         "java-backport", "java-bom", "java-lts", "java-yoshi", "krm-blueprint",
-   "maven", "node", "ocaml", "php", "php-yoshi", "python", "ruby", "ruby-yoshi",
-                                           "rust", "simple", "terraform-module"]
+   [choices: "dart", "dotnet-yoshi", "elixir", "expo", "go", "go-yoshi", "helm",
+                  "java", "java-backport", "java-bom", "java-lts", "java-yoshi",
+       "java-yoshi-mono-repo", "krm-blueprint", "maven", "node", "ocaml", "php",
+      "php-yoshi", "python", "ruby", "ruby-yoshi", "rust", "salesforce", "sfdx",
+                                                   "simple", "terraform-module"]
   --config-file                     where can the config file be found in the
                                     project?
                                          [default: "release-please-config.json"]
